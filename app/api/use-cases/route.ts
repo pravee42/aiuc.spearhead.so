@@ -26,17 +26,25 @@ interface ApiResponse {
 
 export async function GET(request: NextRequest) {
   try {
-    // Check for authentication token in header
+    // Check for authentication token in cookie (preferred) or header (fallback)
+    const tokenFromCookie = request.cookies.get('auth_token')?.value;
     const authHeader = request.headers.get('authorization');
     
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    let token: string | null = null;
+    
+    // Prefer cookie over header
+    if (tokenFromCookie) {
+      token = tokenFromCookie;
+    } else if (authHeader && authHeader.startsWith('Bearer ')) {
+      token = authHeader.replace('Bearer ', '');
+    }
+    
+    if (!token) {
       return NextResponse.json(
-        { error: 'Unauthorized: Missing or invalid authorization header' },
+        { error: 'Unauthorized: Missing authentication token' },
         { status: 401 }
       );
     }
-
-    const token = authHeader.replace('Bearer ', '');
     
     if (token !== AUTH_TOKEN) {
       return NextResponse.json(

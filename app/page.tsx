@@ -1,8 +1,9 @@
 'use client';
 
 import { useEffect, useState, useMemo } from 'react';
+import { useRouter } from 'next/navigation';
 import { DataGrid, GridColDef, GridFilterModel, GridToolbar } from '@mui/x-data-grid';
-import { Box, Typography, CircularProgress, Alert, Paper, Chip } from '@mui/material';
+import { Box, Typography, CircularProgress, Alert, Paper, Chip, Button } from '@mui/material';
 import { ThemeProvider, createTheme } from '@mui/material/styles';
 import { CssBaseline } from '@mui/material';
 import Logo from './components/Logo';
@@ -49,6 +50,9 @@ const theme = createTheme({
             overflow: 'hidden',
             textOverflow: 'ellipsis',
             whiteSpace: 'nowrap',
+            '& > *': {
+              overflow: 'hidden',
+            },
           },
           '& .MuiDataGrid-columnHeaders': {
             backgroundColor: '#fafafa',
@@ -185,6 +189,7 @@ interface ApiResponse {
 }
 
 export default function Home() {
+  const router = useRouter();
   const [data, setData] = useState<UseCaseData[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -194,9 +199,6 @@ export default function Home() {
     pageSize: 20,
   });
   const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set());
-
-  // Static 10-digit auth token (should match server-side)
-  const AUTH_TOKEN = '1234567890';
 
   const fetchData = async (page: number, pageSize: number) => {
     try {
@@ -208,15 +210,17 @@ export default function Home() {
         {
           method: 'GET',
           headers: {
-            'Authorization': `Bearer ${AUTH_TOKEN}`,
             'Content-Type': 'application/json',
           },
+          credentials: 'include', // Include cookies in request
         }
       );
 
       if (!response.ok) {
         if (response.status === 401) {
-          throw new Error('Authentication failed. Please check your token.');
+          // Redirect to login on 401
+          router.push('/login');
+          return;
         }
         throw new Error(`Failed to fetch data: ${response.status}`);
       }
@@ -280,6 +284,7 @@ export default function Home() {
           overflow: isExpanded ? 'visible' : 'hidden',
           whiteSpace: isExpanded ? 'normal' : 'nowrap',
           cursor: 'pointer',
+          minHeight: isExpanded ? 'auto' : '24px',
           '&:hover': {
             opacity: 0.8,
           },
@@ -316,7 +321,7 @@ export default function Home() {
         const isExpanded = expandedRows.has(rowId);
         return (
           <Box
-            onDoubleClick={(e) => {
+            onClick={(e) => {
               e.stopPropagation();
               toggleRowExpansion(rowId);
             }}
@@ -341,7 +346,7 @@ export default function Home() {
         const isExpanded = expandedRows.has(rowId);
         return (
           <Box
-            onDoubleClick={(e) => {
+            onClick={(e) => {
               e.stopPropagation();
               toggleRowExpansion(rowId);
             }}
@@ -369,7 +374,7 @@ export default function Home() {
         const isExpanded = expandedRows.has(rowId);
         return (
           <Box
-            onDoubleClick={(e) => {
+            onClick={(e) => {
               e.stopPropagation();
               toggleRowExpansion(rowId);
             }}
@@ -397,7 +402,7 @@ export default function Home() {
         const isExpanded = expandedRows.has(rowId);
         return (
           <Box
-            onDoubleClick={(e) => {
+            onClick={(e) => {
               e.stopPropagation();
               toggleRowExpansion(rowId);
             }}
@@ -425,7 +430,7 @@ export default function Home() {
         const isExpanded = expandedRows.has(rowId);
         return (
           <Box
-            onDoubleClick={(e) => {
+            onClick={(e) => {
               e.stopPropagation();
               toggleRowExpansion(rowId);
             }}
@@ -446,14 +451,14 @@ export default function Home() {
     {
       field: 'AI Algorithms & Frameworks',
       headerName: 'AI Algorithms & Frameworks',
-      width: 400,
+      width: 550,
       filterable: true,
       renderCell: (params) => {
         const rowId = params.row.id as number;
         const isExpanded = expandedRows.has(rowId);
         return (
           <Box
-            onDoubleClick={(e) => {
+            onClick={(e) => {
               e.stopPropagation();
               toggleRowExpansion(rowId);
             }}
@@ -474,14 +479,14 @@ export default function Home() {
     {
       field: 'Datasets',
       headerName: 'Datasets',
-      width: 350,
+      width: 450,
       filterable: true,
       renderCell: (params) => {
         const rowId = params.row.id as number;
         const isExpanded = expandedRows.has(rowId);
         return (
           <Box
-            onDoubleClick={(e) => {
+            onClick={(e) => {
               e.stopPropagation();
               toggleRowExpansion(rowId);
             }}
@@ -509,7 +514,7 @@ export default function Home() {
         const isExpanded = expandedRows.has(rowId);
         return (
           <Box
-            onDoubleClick={(e) => {
+            onClick={(e) => {
               e.stopPropagation();
               toggleRowExpansion(rowId);
             }}
@@ -534,14 +539,14 @@ export default function Home() {
     {
       field: 'AI Tools & Models',
       headerName: 'AI Tools & Models',
-      width: 350,
+      width: 450,
       filterable: true,
       renderCell: (params) => {
         const rowId = params.row.id as number;
         const isExpanded = expandedRows.has(rowId);
         return (
           <Box
-            onDoubleClick={(e) => {
+            onClick={(e) => {
               e.stopPropagation();
               toggleRowExpansion(rowId);
             }}
@@ -569,7 +574,7 @@ export default function Home() {
         const isExpanded = expandedRows.has(rowId);
         return (
           <Box
-            onDoubleClick={(e) => {
+            onClick={(e) => {
               e.stopPropagation();
               toggleRowExpansion(rowId);
             }}
@@ -597,7 +602,7 @@ export default function Home() {
         const isExpanded = expandedRows.has(rowId);
         return (
           <Box
-            onDoubleClick={(e) => {
+            onClick={(e) => {
               e.stopPropagation();
               toggleRowExpansion(rowId);
             }}
@@ -685,6 +690,36 @@ export default function Home() {
                 AI Use Case Repository
               </Typography>
             </Box>
+
+            {/* Logout Button */}
+            <Box>
+              <Button
+                onClick={async () => {
+                  try {
+                    await fetch('/api/auth/logout', {
+                      method: 'POST',
+                      credentials: 'include',
+                    });
+                    router.push('/login');
+                    router.refresh();
+                  } catch (err) {
+                    console.error('Logout error:', err);
+                    router.push('/login');
+                  }
+                }}
+                sx={{
+                  color: PURE_ORANGE,
+                  borderColor: PURE_ORANGE,
+                  '&:hover': {
+                    backgroundColor: '#fff5f2',
+                    borderColor: PURE_ORANGE,
+                  },
+                }}
+                variant="outlined"
+              >
+                Logout
+              </Button>
+            </Box>
           </Box>
         </Box>
 
@@ -748,7 +783,8 @@ export default function Home() {
                 filterMode="client"
                 getRowHeight={(params) => {
                   // Use a larger fixed height for expanded rows to accommodate wrapped content
-                  return expandedRows.has(params.id as number) ? 200 : 52;
+                  // Expanded rows need more space for wrapped chips and text
+                  return expandedRows.has(params.id as number) ? 300 : 52;
                 }}
                 slots={{
                   toolbar: GridToolbar,
@@ -762,7 +798,13 @@ export default function Home() {
                 sx={{
                   border: 'none',
                   '& .MuiDataGrid-cell': {
-                    overflow: 'visible !important',
+                    overflow: 'hidden !important',
+                  },
+                  '& .MuiDataGrid-row.expanded': {
+                    '& .MuiDataGrid-cell': {
+                      overflow: 'visible !important',
+                      whiteSpace: 'normal !important',
+                    },
                   },
                   '& .MuiDataGrid-cell:focus': {
                     outline: 'none',
@@ -776,6 +818,9 @@ export default function Home() {
                   '& .MuiDataGrid-columnHeader:focus-within': {
                     outline: 'none',
                   },
+                }}
+                getRowClassName={(params) => {
+                  return expandedRows.has(params.id as number) ? 'expanded' : '';
                 }}
               />
             )}
