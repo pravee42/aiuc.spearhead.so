@@ -1,14 +1,9 @@
 "use client";
 
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import {
-  DataGrid,
-  GridColDef,
-  GridFilterModel,
-  GridToolbar,
-  useGridApiContext,
-} from "@mui/x-data-grid";
+import { AgGridReact } from "ag-grid-react";
+import { ColDef, GridApi, GridReadyEvent, BodyScrollEvent } from "ag-grid-community";
 import {
   Box,
   Typography,
@@ -27,98 +22,9 @@ import Logo from "./components/Logo";
 // Pure Storage theme color
 const PURE_ORANGE = "#fe5000";
 
-// Custom header component with filter button
-function CustomColumnHeader({
-  field,
-  headerName,
-}: {
-  field: string;
-  headerName: string;
-}) {
-  const apiRef = useGridApiContext();
+// Note: MUI DataGrid-specific header/filter logic has been removed.
 
-  const handleFilterClick = (event: React.MouseEvent) => {
-    event.stopPropagation();
-    // Open the filter panel for this column
-    const api = apiRef.current;
-    if (api) {
-      try {
-        // Try to use showFilterPanel method (available in MUI DataGrid v6+)
-        if (typeof (api as any).showFilterPanel === "function") {
-          (api as any).showFilterPanel(field);
-        } else {
-          // Fallback: Find the column header menu button and click it, then click filter option
-          const columnHeaderElement = document.querySelector(
-            `[data-field="${field}"].MuiDataGrid-columnHeader`
-          );
-          if (columnHeaderElement) {
-            // Find the menu button (three dots icon)
-            const menuButton = columnHeaderElement.querySelector(
-              ".MuiDataGrid-menuIconButton"
-            ) as HTMLElement;
-            if (menuButton) {
-              menuButton.click();
-              // Wait for menu to open, then click the filter option
-              setTimeout(() => {
-                const menuItems = Array.from(
-                  document.querySelectorAll('[role="menuitem"]')
-                );
-                const filterItem = menuItems.find((item) =>
-                  item.textContent?.toLowerCase().includes("filter")
-                ) as HTMLElement;
-                if (filterItem) {
-                  filterItem.click();
-                }
-              }, 100);
-            }
-          }
-        }
-      } catch (error) {
-        console.error("Error opening filter panel:", error);
-      }
-    }
-  };
 
-  return (
-    <Box
-      sx={{
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between",
-        width: "100%",
-        gap: 1,
-      }}
-    >
-      <Typography
-        variant="body2"
-        sx={{
-          fontWeight: 600,
-          color: "#1a1a1a",
-          flex: 1,
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "nowrap",
-        }}
-      >
-        {headerName}
-      </Typography>
-      <IconButton
-        size="small"
-        onClick={handleFilterClick}
-        sx={{
-          padding: "4px",
-          color: PURE_ORANGE,
-          "&:hover": {
-            backgroundColor: "#fff5f2",
-          },
-        }}
-        aria-label={`Filter ${headerName}`}
-      >
-        <FilterListIcon fontSize="small" />
-      </IconButton>
-    </Box>
-  );
-}
 
 const theme = createTheme({
   palette: {
@@ -226,17 +132,9 @@ const theme = createTheme({
               color: PURE_ORANGE,
             },
           },
-          "& .MuiTablePagination-root": {
-            color: "#1a1a1a",
-          },
-          "& .MuiTablePagination-selectLabel": {
-            color: "#1a1a1a",
-          },
-          "& .MuiTablePagination-displayedRows": {
-            color: "#1a1a1a",
-          },
-          "& .MuiSelect-select": {
-            color: "#1a1a1a",
+          // Hide standard pagination
+          "& .MuiDataGrid-footerContainer": {
+            borderTop: "none",
           },
         },
       },
@@ -265,14 +163,6 @@ const theme = createTheme({
         },
       },
     },
-    MuiDialog: {
-      styleOverrides: {
-        paper: {
-          backgroundColor: "#ffffff",
-          color: "#1a1a1a",
-        },
-      },
-    },
   },
 });
 
@@ -294,68 +184,142 @@ interface UseCaseData {
 interface ApiResponse {
   total: number;
   page: number;
-  page_size: number;
+  page_size: number | string;
   data: Omit<UseCaseData, "id">[];
 }
 
+// Use a conservative page size that the API definitely accepts
+const PAGE_SIZE = 20;
+
 export default function Home() {
   const router = useRouter();
+
+  // AG Grid API ref so we can recalculate row heights when rows expand/collapse
+  const gridApiRef = useRef<GridApi | null>(null);
+
+  // State for data and pagination
   const [data, setData] = useState<UseCaseData[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [page, setPage] = useState(0); // 0-indexed page
+  const [loading, setLoading] = useState(true); // Initial loading
+  const [isFetchingMore, setIsFetchingMore] = useState(false); // Background loading
   const [error, setError] = useState<string | null>(null);
-  const [totalRows, setTotalRows] = useState(0);
-  const [paginationModel, setPaginationModel] = useState({
-    page: 0,
-    pageSize: 20,
-  });
+  const [hasMore, setHasMore] = useState(true);
+
   const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set());
 
-  const fetchData = async (page: number, pageSize: number) => {
-    try {
-      setLoading(true);
-      setError(null);
+  const loadData = useCallback(
+    async (currentPage: number) => {
+      try {
+        if (currentPage === 0) setLoading(true);
+        else setIsFetchingMore(true);
 
-      const response = await fetch(
-        `/api/use-cases?page=${page + 1}&page_size=${pageSize}`,
-        {
-          method: "GET",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          credentials: "include", // Include cookies in request
-        }
-      );
+        setError(null);
 
-      if (!response.ok) {
-        if (response.status === 401) {
-          // Redirect to login on 401
-          router.push("/login");
-          return;
+        const response = await fetch(
+          `/api/use-cases?page=${currentPage + 1}&page_size=${PAGE_SIZE}`,
+          {
+            method: "GET",
+            headers: { "Content-Type": "application/json" },
+            credentials: "include",
+          }
+        );
+
+        if (!response.ok) {
+          if (response.status === 401) {
+            router.push("/login");
+            return;
+          }
+          throw new Error(`Failed to fetch data: ${response.status}`);
         }
-        throw new Error(`Failed to fetch data: ${response.status}`);
+
+        const result: ApiResponse = await response.json();
+
+        // Respect the page_size actually returned by the API (some APIs cap it)
+        const parsedPageSize =
+          typeof result.page_size === "string"
+            ? parseInt(result.page_size, 10)
+            : result.page_size;
+        const effectivePageSize =
+          typeof parsedPageSize === "number" && !Number.isNaN(parsedPageSize)
+            ? parsedPageSize
+            : PAGE_SIZE;
+
+        console.log(
+          "[loadData] page",
+          currentPage,
+          "result.page",
+          result.page,
+          "result.page_size",
+          result.page_size,
+          "effectivePageSize",
+          effectivePageSize,
+          "result.total",
+          result.total,
+          "result.data.length",
+          result.data.length
+        );
+
+        const newData = result.data.map((item, index) => ({
+          ...item,
+          id: item.Capability,
+        }));
+
+        setData((prevData) => {
+          const combined =
+            currentPage === 0 ? newData : [...prevData, ...newData];
+          console.log(
+            "[loadData] setting data length",
+            combined.length,
+            "prev",
+            prevData.length,
+            "added",
+            newData.length
+          );
+          return combined;
+        });
+
+        const totalFetched =
+          currentPage * effectivePageSize + result.data.length;
+        if (typeof result.total === "number" && result.total > 0) {
+          setHasMore(totalFetched < result.total);
+        } else {
+          setHasMore(result.data.length === effectivePageSize);
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "An error occurred");
+        console.error("Error fetching data:", err);
+      } finally {
+        setLoading(false);
+        setIsFetchingMore(false);
       }
+    },
+    [router]
+  );
 
-      const result: ApiResponse = await response.json();
-
-      // Add id field for DataGrid
-      const dataWithIds = result.data.map((item, index) => ({
-        ...item,
-        id: page * pageSize + index + 1,
-      }));
-
-      setData(dataWithIds);
-      setTotalRows(result.total);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "An error occurred");
-      console.error("Error fetching data:", err);
-    } finally {
-      setLoading(false);
-    }
-  };
-
+  // Initial load
   useEffect(() => {
-    fetchData(paginationModel.page, paginationModel.pageSize);
-  }, [paginationModel.page, paginationModel.pageSize]);
+    loadData(0);
+  }, []);
+
+  // Handler for infinite scroll
+  const handleLoadMore = useCallback(() => {
+    if (!isFetchingMore && hasMore && !loading) {
+      const nextPage = page + 1;
+      setPage(nextPage);
+      loadData(nextPage);
+    }
+  }, [isFetchingMore, hasMore, loading, page, loadData]);
+
+  const onBodyScroll = useCallback((event: BodyScrollEvent) => {
+    const { api } = event;
+    const lastDisplayedRow = api.getLastDisplayedRow();
+    const totalRows = api.getDisplayedRowCount();
+
+    // Load more when we are near the bottom (e.g. 10 rows remaining)
+    if (totalRows > 0 && lastDisplayedRow >= totalRows - 10) {
+      handleLoadMore();
+    }
+  }, [handleLoadMore]);
 
   // Helper function to parse CSV values
   const parseChipItems = (value: string | null | undefined): string[] => {
@@ -377,9 +341,14 @@ export default function Home() {
       }
       return newSet;
     });
+
+    // Ask AG Grid to recompute row heights after the expanded set changes
+    if (gridApiRef.current) {
+      gridApiRef.current.resetRowHeights();
+    }
   };
 
-  // Helper function to render chips - clipped when collapsed, wrapped when expanded
+  // Helper function to render chips
   const renderChips = (
     value: string | null | undefined,
     rowId: number,
@@ -423,39 +392,27 @@ export default function Home() {
     );
   };
 
-  const columns: GridColDef[] = useMemo(() => {
-    const chipFields = [
-      "AI Algorithms & Frameworks",
-      "Datasets",
-      "AI Tools & Models",
-      "Digital Platforms and Tools",
-      "Expected Outcomes and Results",
-    ];
+  const getRowId = useCallback((params: any) => {
+    return String(params.data.id);
+  }, []);
 
+  const columnDefs: ColDef<UseCaseData>[] = useMemo(() => {
     return [
       {
         field: "Capability",
         headerName: "Capability",
         width: 120,
-        type: "number",
-        filterable: true,
-        renderHeader: () => (
-          <CustomColumnHeader field="Capability" headerName="Capability" />
-        ),
-        renderCell: (params) => {
-          const rowId = params.row.id as number;
-          const isExpanded = expandedRows.has(rowId);
+        filter: true,
+        sortable: true,
+        cellRenderer: (params: any) => {
+          const rowId = (params.data?.id as number) ?? 0;
           return (
             <Box
               onClick={(e) => {
                 e.stopPropagation();
                 toggleRowExpansion(rowId);
               }}
-              sx={{
-                width: "100%",
-                cursor: "pointer",
-                py: 1,
-              }}
+              sx={{ width: "100%", cursor: "pointer", py: 1 }}
             >
               {params.value}
             </Box>
@@ -466,15 +423,10 @@ export default function Home() {
         field: "Business Function",
         headerName: "Business Function",
         width: 180,
-        filterable: true,
-        renderHeader: () => (
-          <CustomColumnHeader
-            field="Business Function"
-            headerName="Business Function"
-          />
-        ),
-        renderCell: (params) => {
-          const rowId = params.row.id as number;
+        filter: true,
+        sortable: true,
+        cellRenderer: (params: any) => {
+          const rowId = (params.data?.id as number) ?? 0;
           const isExpanded = expandedRows.has(rowId);
           return (
             <Box
@@ -500,15 +452,11 @@ export default function Home() {
         field: "Business Capability",
         headerName: "Business Capability",
         width: 200,
-        filterable: true,
-        renderHeader: () => (
-          <CustomColumnHeader
-            field="Business Capability"
-            headerName="Business Capability"
-          />
-        ),
-        renderCell: (params) => {
-          const rowId = params.row.id as number;
+        filter: true,
+        sortable: true,
+        autoHeight: true,
+        cellRenderer: (params: any) => {
+          const rowId = (params.data?.id as number) ?? 0;
           const isExpanded = expandedRows.has(rowId);
           return (
             <Box
@@ -534,15 +482,11 @@ export default function Home() {
         field: "Stakeholder or User",
         headerName: "Stakeholder or User",
         width: 180,
-        filterable: true,
-        renderHeader: () => (
-          <CustomColumnHeader
-            field="Stakeholder or User"
-            headerName="Stakeholder or User"
-          />
-        ),
-        renderCell: (params) => {
-          const rowId = params.row.id as number;
+        filter: true,
+        sortable: true,
+        autoHeight: true,
+        cellRenderer: (params: any) => {
+          const rowId = (params.data?.id as number) ?? 0;
           const isExpanded = expandedRows.has(rowId);
           return (
             <Box
@@ -568,12 +512,11 @@ export default function Home() {
         field: "AI Use Case",
         headerName: "AI Use Case",
         width: 200,
-        filterable: true,
-        renderHeader: () => (
-          <CustomColumnHeader field="AI Use Case" headerName="AI Use Case" />
-        ),
-        renderCell: (params) => {
-          const rowId = params.row.id as number;
+        filter: true,
+        sortable: true,
+        autoHeight: true,
+        cellRenderer: (params: any) => {
+          const rowId = (params.data?.id as number) ?? 0;
           const isExpanded = expandedRows.has(rowId);
           return (
             <Box
@@ -599,15 +542,11 @@ export default function Home() {
         field: "AI Algorithms & Frameworks",
         headerName: "AI Algorithms & Frameworks",
         width: 550,
-        filterable: true,
-        renderHeader: () => (
-          <CustomColumnHeader
-            field="AI Algorithms & Frameworks"
-            headerName="AI Algorithms & Frameworks"
-          />
-        ),
-        renderCell: (params) => {
-          const rowId = params.row.id as number;
+        filter: true,
+        sortable: true,
+        autoHeight: true,
+        cellRenderer: (params: any) => {
+          const rowId = (params.data?.id as number) ?? 0;
           const isExpanded = expandedRows.has(rowId);
           return (
             <Box
@@ -633,12 +572,11 @@ export default function Home() {
         field: "Datasets",
         headerName: "Datasets",
         width: 450,
-        filterable: true,
-        renderHeader: () => (
-          <CustomColumnHeader field="Datasets" headerName="Datasets" />
-        ),
-        renderCell: (params) => {
-          const rowId = params.row.id as number;
+        filter: true,
+        sortable: true,
+        autoHeight: true,
+        cellRenderer: (params: any) => {
+          const rowId = (params.data?.id as number) ?? 0;
           const isExpanded = expandedRows.has(rowId);
           return (
             <Box
@@ -664,15 +602,11 @@ export default function Home() {
         field: "Action / Implementation",
         headerName: "Action / Implementation",
         width: 400,
-        filterable: true,
-        renderHeader: () => (
-          <CustomColumnHeader
-            field="Action / Implementation"
-            headerName="Action / Implementation"
-          />
-        ),
-        renderCell: (params) => {
-          const rowId = params.row.id as number;
+        filter: true,
+        sortable: true,
+        autoHeight: true,
+        cellRenderer: (params: any) => {
+          const rowId = (params.data?.id as number) ?? 0;
           const isExpanded = expandedRows.has(rowId);
           return (
             <Box
@@ -702,15 +636,11 @@ export default function Home() {
         field: "AI Tools & Models",
         headerName: "AI Tools & Models",
         width: 450,
-        filterable: true,
-        renderHeader: () => (
-          <CustomColumnHeader
-            field="AI Tools & Models"
-            headerName="AI Tools & Models"
-          />
-        ),
-        renderCell: (params) => {
-          const rowId = params.row.id as number;
+        filter: true,
+        sortable: true,
+        autoHeight: true,
+        cellRenderer: (params: any) => {
+          const rowId = (params.data?.id as number) ?? 0;
           const isExpanded = expandedRows.has(rowId);
           return (
             <Box
@@ -736,15 +666,11 @@ export default function Home() {
         field: "Digital Platforms and Tools",
         headerName: "Digital Platforms and Tools",
         width: 250,
-        filterable: true,
-        renderHeader: () => (
-          <CustomColumnHeader
-            field="Digital Platforms and Tools"
-            headerName="Digital Platforms and Tools"
-          />
-        ),
-        renderCell: (params) => {
-          const rowId = params.row.id as number;
+        filter: true,
+        sortable: true,
+        autoHeight: true,
+        cellRenderer: (params: any) => {
+          const rowId = (params.data?.id as number) ?? 0;
           const isExpanded = expandedRows.has(rowId);
           return (
             <Box
@@ -770,15 +696,11 @@ export default function Home() {
         field: "Expected Outcomes and Results",
         headerName: "Expected Outcomes and Results",
         width: 300,
-        filterable: true,
-        renderHeader: () => (
-          <CustomColumnHeader
-            field="Expected Outcomes and Results"
-            headerName="Expected Outcomes and Results"
-          />
-        ),
-        renderCell: (params) => {
-          const rowId = params.row.id as number;
+        filter: true,
+        sortable: true,
+        autoHeight: true,
+        cellRenderer: (params: any) => {
+          const rowId = (params.data?.id as number) ?? 0;
           const isExpanded = expandedRows.has(rowId);
           return (
             <Box
@@ -832,13 +754,7 @@ export default function Home() {
             }}
           >
             {/* Pure Storage Logo */}
-            <Box
-              sx={{
-                display: "flex",
-                alignItems: "center",
-                gap: 1,
-              }}
-            >
+            <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
               <Logo
                 src="/assets/purelogo.png"
                 alt="Pure Storage"
@@ -848,7 +764,7 @@ export default function Home() {
               />
             </Box>
 
-            {/* Title and Results */}
+            {/* Title */}
             <Box
               sx={{
                 display: "flex",
@@ -861,11 +777,7 @@ export default function Home() {
               <Typography
                 variant="h4"
                 component="h1"
-                sx={{
-                  color: "#1a1a1a",
-                  fontWeight: 600,
-                  fontSize: "1.75rem",
-                }}
+                sx={{ color: "#1a1a1a", fontWeight: 600, fontSize: "1.75rem" }}
               >
                 AI Use Case Repository
               </Typography>
@@ -909,7 +821,7 @@ export default function Home() {
             flex: 1,
             padding: "24px 32px",
             maxWidth: "100%",
-            overflow: "hidden",
+            overflow: "auto",
             display: "flex",
             flexDirection: "column",
           }}
@@ -920,7 +832,7 @@ export default function Home() {
               width: "100%",
               display: "flex",
               flexDirection: "column",
-              overflow: "hidden",
+              overflow: "auto",
               backgroundColor: "#ffffff",
             }}
           >
@@ -950,61 +862,62 @@ export default function Home() {
                 <CircularProgress sx={{ color: PURE_ORANGE }} />
               </Box>
             ) : (
-              <DataGrid
-                rows={data}
-                columns={columns}
-                paginationMode="server"
-                rowCount={totalRows}
-                paginationModel={paginationModel}
-                onPaginationModelChange={setPaginationModel}
-                pageSizeOptions={[10, 20, 50, 100]}
-                loading={loading}
-                disableRowSelectionOnClick
-                filterMode="client"
-                getRowHeight={(params) => {
-                  // Use a larger fixed height for expanded rows to accommodate wrapped content
-                  // Expanded rows need more space for wrapped chips and text
-                  return expandedRows.has(params.id as number) ? 300 : 52;
-                }}
-                slots={{
-                  toolbar: GridToolbar,
-                }}
-                slotProps={{
-                  toolbar: {
-                    showQuickFilter: true,
-                    quickFilterProps: { debounceMs: 500 },
-                  },
-                }}
+              <Box
                 sx={{
-                  border: "none",
-                  "& .MuiDataGrid-cell": {
-                    overflow: "hidden !important",
-                  },
-                  "& .MuiDataGrid-row.expanded": {
-                    "& .MuiDataGrid-cell": {
-                      overflow: "visible !important",
-                      whiteSpace: "normal !important",
-                    },
-                  },
-                  "& .MuiDataGrid-cell:focus": {
-                    outline: "none",
-                  },
-                  "& .MuiDataGrid-cell:focus-within": {
-                    outline: "none",
-                  },
-                  "& .MuiDataGrid-columnHeader:focus": {
-                    outline: "none",
-                  },
-                  "& .MuiDataGrid-columnHeader:focus-within": {
-                    outline: "none",
-                  },
+                  flex: 1,
+                  minHeight: 0,
+                  display: "flex",
+                  flexDirection: "column",
                 }}
-                getRowClassName={(params) => {
-                  return expandedRows.has(params.id as number)
-                    ? "expanded"
-                    : "";
-                }}
-              />
+              >
+                <Box sx={{ flex: 1, minHeight: 0, position: "relative", height: "70vh" }}>
+                  <div
+                    className="ag-theme-alpine"
+                    style={{ width: "100%", height: "100%" }}
+                  >
+                    <AgGridReact<UseCaseData>
+                      rowData={data}
+                      columnDefs={columnDefs}
+                      suppressPaginationPanel
+                      suppressRowClickSelection
+                      rowSelection="single"
+                      onBodyScroll={onBodyScroll}
+                      getRowId={getRowId}
+                      onGridReady={(params: GridReadyEvent) => {
+                        gridApiRef.current = params.api;
+                      }}
+                      rowHeight={52}
+                    />
+                  </div>
+                  {isFetchingMore && (
+                    <Box
+                      sx={{
+                        position: "absolute",
+                        bottom: 32,
+                        left: "50%",
+                        transform: "translateX(-50%)",
+                        backgroundColor: "#ffffff",
+                        boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
+                        borderRadius: "24px",
+                        padding: "8px 24px",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 1.5,
+                        zIndex: 1000,
+                        border: `1px solid ${PURE_ORANGE}`,
+                      }}
+                    >
+                      <CircularProgress size={16} sx={{ color: PURE_ORANGE }} />
+                      <Typography
+                        variant="body2"
+                        sx={{ color: PURE_ORANGE, fontWeight: 600 }}
+                      >
+                        Loading more...
+                      </Typography>
+                    </Box>
+                  )}
+                </Box>
+              </Box>
             )}
           </Paper>
         </Box>
