@@ -933,15 +933,6 @@ export default function Home() {
             gap: 2,
           }}
         >
-          <Typography
-            variant="body2"
-            sx={{
-              color: "#666666",
-              fontSize: "0.75rem",
-            }}
-          >
-            Powered by
-          </Typography>
           <Logo
             src="/assets/spearhead.png"
             alt="Spearhead"
