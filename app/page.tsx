@@ -870,10 +870,10 @@ export default function Home() {
                   flexDirection: "column",
                 }}
               >
-                <Box sx={{ flex: 1, minHeight: 0, position: "relative", height: "70vh" }}>
+                <Box sx={{ flex: 1, minHeight: 0, position: "relative" }}>
                   <div
                     className="ag-theme-alpine"
-                    style={{ width: "100%", height: "100%" }}
+                    style={{ width: "100%", height: "70vh" }}
                   >
                     <AgGridReact<UseCaseData>
                       rowData={data}
